@@ -1,0 +1,6 @@
+{
+  "name": "MarketView — Global Financial Markets",
+  "description": "Real-time quotes, interactive market charts, stock screeners, crypto, commodities, forex, and economic calendar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

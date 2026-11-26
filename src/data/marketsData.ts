@@ -1,0 +1,1396 @@
+export type MarketCategory =
+  | 'Indices'
+  | 'US stocks'
+  | 'World stocks'
+  | 'Crypto'
+  | 'Futures & commodities'
+  | 'Forex & currencies'
+  | 'Bonds'
+  | 'ETFs'
+  | 'Economy';
+
+export type TimeframeKey = '1D' | '5D' | '1M' | '3M' | '1Y' | '5Y' | 'ALL';
+
+export interface ChartPoint {
+  time: string;
+  value: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface Instrument {
+  id: string;
+  symbol: string;
+  shortLabel?: string;
+  name: string;
+  exchange: string;
+  category: MarketCategory;
+  currency: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  prevClose: number;
+  dayRange: string;
+  week52Range: string;
+  volume: string;
+  marketCap?: string;
+  sector?: string;
+  peRatio?: string;
+  dividendYield?: string;
+  volatility?: number; // % score for Most Volatile sort
+  sparkline: number[];
+  badgeColor: string;
+  badgeTextColor?: string;
+  region?: 'Americas' | 'Europe' | 'Asia-Pacific' | 'Global';
+  technicalRating: 'Strong Buy' | 'Buy' | 'Neutral' | 'Sell' | 'Strong Sell';
+  rsi: number;
+  macd: string;
+  seriesByTimeframe: Record<TimeframeKey, ChartPoint[]>;
+}
+
+export interface EconomicEvent {
+  id: string;
+  time: string;
+  timezone: string;
+  countryCode: 'US' | 'EU' | 'JP' | 'UK' | 'CN' | 'DE' | 'CA';
+  impact: 'HIGH IMPACT' | 'MED IMPACT' | 'LOW IMPACT';
+  title: string;
+  category: string;
+  actual: string;
+  forecast: string;
+  prior: string;
+  description: string;
+}
+
+export interface BondInstrument {
+  id: string;
+  symbol: string;
+  name: string;
+  country: string;
+  countryCode: 'US' | 'DE' | 'UK' | 'JP' | 'FR' | 'IT';
+  maturity: string;
+  yield: number;
+  changeBps: number;
+  prevClose: number;
+  coupon: string;
+  price: number;
+}
+
+export interface EtfInstrument {
+  id: string;
+  symbol: string;
+  name: string;
+  issuer: string;
+  assetClass: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  aum: string;
+  expenseRatio: string;
+  dividendYield: string;
+  sparkline: number[];
+}
+
+export interface HeatmapBlock {
+  symbol: string;
+  name: string;
+  sector: string;
+  price: number;
+  changePercent: number;
+  marketCapWeight: number; // relative grid size
+}
+
+// Deterministic pseudo-random series generator that ends cleanly on the target price
+function generateSeries(
+  endPrice: number,
+  prevClose: number,
+  pointsCount: number,
+  volatilityPct: number,
+  seed: number,
+  labels: string[],
+  waveShape?: number[]
+): ChartPoint[] {
+  const result: ChartPoint[] = [];
+  let s = seed;
+  const rand = () => {
+    s = (s * 1664525 + 1013904223) % 4294967296;
+    return s / 4294967296;
+  };
+
+  if (waveShape && waveShape.length === pointsCount) {
+    const minW = Math.min(...waveShape);
+    const maxW = Math.max(...waveShape);
+    const startVal = prevClose * (1 + (waveShape[0] - 0.5) * volatilityPct);
+    const span = endPrice - startVal;
+
+    for (let i = 0; i < pointsCount; i++) {
+      const progress = i / (pointsCount - 1);
+      const norm = (waveShape[i] - minW) / (maxW - minW || 1);
+      const base = prevClose + (norm - 0.38) * endPrice * volatilityPct;
+      const val = i === pointsCount - 1 ? endPrice : base + progress * span * 0.15;
+      const spread = Math.abs(endPrice * volatilityPct * 0.12);
+      const open = i === 0 ? prevClose : result[i - 1].close;
+      const close = Number(val.toFixed(endPrice < 10 ? 4 : 2));
+      const high = Number((Math.max(open, close) + spread * (0.4 + rand() * 0.6)).toFixed(endPrice < 10 ? 4 : 2));
+      const low = Number((Math.min(open, close) - spread * (0.4 + rand() * 0.6)).toFixed(endPrice < 10 ? 4 : 2));
+      result.push({
+        time: labels[i] ?? `T+${i}`,
+        value: close,
+        open: Number(open.toFixed(endPrice < 10 ? 4 : 2)),
+        high,
+        low,
+        close,
+        volume: Math.round(45 + rand() * 110),
+      });
+    }
+    return result;
+  }
+
+  // Random bridge from startPrice to endPrice
+  const startPrice = prevClose * (1 - ((endPrice - prevClose) / prevClose) * 0.12);
+  const raw: number[] = [startPrice];
+  for (let i = 1; i < pointsCount; i++) {
+    const step = (rand() - 0.48) * endPrice * volatilityPct;
+    raw.push(raw[i - 1] + step);
+  }
+  const rawEnd = raw[pointsCount - 1];
+  const driftAdjust = endPrice - rawEnd;
+
+  for (let i = 0; i < pointsCount; i++) {
+    const t = i / (pointsCount - 1);
+    const val = i === pointsCount - 1 ? endPrice : raw[i] + t * driftAdjust;
+    const close = Number(val.toFixed(endPrice < 10 ? 4 : 2));
+    const open = i === 0 ? Number(prevClose.toFixed(endPrice < 10 ? 4 : 2)) : result[i - 1].close;
+    const spread = Math.abs(endPrice * volatilityPct * 0.35);
+    const high = Number((Math.max(open, close) + spread * rand()).toFixed(endPrice < 10 ? 4 : 2));
+    const low = Number((Math.min(open, close) - spread * rand()).toFixed(endPrice < 10 ? 4 : 2));
+    result.push({
+      time: labels[i] ?? `${i}`,
+      value: close,
+      open,
+      high,
+      low,
+      close,
+      volume: Math.round(30 + rand() * 95),
+    });
+  }
+  return result;
+}
+
+const INTRADAY_LABELS = [
+  '09:30', '09:45', '10:00', '10:15', '10:30', '10:45', '11:00', '11:15',
+  '11:30', '11:45', '12:00', '12:15', '12:30', '12:45', '13:00', '13:15',
+  '13:30', '13:45', '14:00', '14:15', '14:30', '14:45', '15:00', '15:15',
+  '15:30', '15:45', '16:00'
+];
+
+// Matches the wavy rising S&P 500 intraday silhouette in the reference screenshot
+const SPX_WAVE = [
+  0.22, 0.27, 0.25, 0.16, 0.18, 0.31, 0.25, 0.12,
+  0.24, 0.44, 0.36, 0.19, 0.27, 0.46, 0.44, 0.31,
+  0.34, 0.62, 0.50, 0.45, 0.72, 0.68, 0.42, 0.68,
+  0.88, 0.64, 0.61
+];
+
+const LABELS_5D = ['Mon 10:00', 'Mon 14:00', 'Tue 10:00', 'Tue 14:00', 'Wed 10:00', 'Wed 14:00', 'Thu 10:00', 'Thu 14:00', 'Fri 10:00', 'Fri 12:00', 'Fri 14:00', 'Fri 16:00'];
+const LABELS_1M = ['Nov 1', 'Nov 4', 'Nov 6', 'Nov 8', 'Nov 11', 'Nov 13', 'Nov 15', 'Nov 18', 'Nov 20', 'Nov 22', 'Nov 24', 'Nov 25'];
+const LABELS_3M = ['Sep 1', 'Sep 10', 'Sep 20', 'Oct 1', 'Oct 10', 'Oct 20', 'Nov 1', 'Nov 10', 'Nov 15', 'Nov 20', 'Nov 22', 'Nov 25'];
+const LABELS_1Y = ['Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov'];
+const LABELS_5Y = ['2022 Q1', '2022 Q3', '2023 Q1', '2023 Q3', '2024 Q1', '2024 Q3', '2025 Q1', '2025 Q3', '2026 Q1', '2026 Q2', '2026 Q3', '2026 Q4'];
+const LABELS_ALL = ['2016', '2017', '2018', '2019', '2020', '2021', '2022', '2023', '2024', '2025', '2026 YTD', 'Now'];
+
+function buildAllTimeframes(
+  price: number,
+  prevClose: number,
+  seed: number,
+  intradayWave?: number[]
+): Record<TimeframeKey, ChartPoint[]> {
+  return {
+    '1D': generateSeries(price, prevClose, INTRADAY_LABELS.length, 0.0085, seed, INTRADAY_LABELS, intradayWave),
+    '5D': generateSeries(price, price * 0.985, LABELS_5D.length, 0.007, seed + 11, LABELS_5D),
+    '1M': generateSeries(price, price * 0.964, LABELS_1M.length, 0.013, seed + 22, LABELS_1M),
+    '3M': generateSeries(price, price * 0.928, LABELS_3M.length, 0.018, seed + 33, LABELS_3M),
+    '1Y': generateSeries(price, price * 0.81, LABELS_1Y.length, 0.032, seed + 44, LABELS_1Y),
+    '5Y': generateSeries(price, price * 0.56, LABELS_5Y.length, 0.055, seed + 55, LABELS_5Y),
+    'ALL': generateSeries(price, price * 0.34, LABELS_ALL.length, 0.08, seed + 66, LABELS_ALL),
+  };
+}
+
+export const MAJOR_INDICES: Instrument[] = [
+  {
+    id: 'spx',
+    symbol: 'SPX',
+    shortLabel: 'S&P 500',
+    name: 'S&P 500 Index',
+    exchange: 'NYSE / CME',
+    category: 'Indices',
+    currency: 'USD',
+    price: 5969.34,
+    change: 33.78,
+    changePercent: 0.57,
+    prevClose: 5935.56,
+    dayRange: '5,934.11 – 5,972.50',
+    week52Range: '4,521.80 – 6,017.31',
+    volume: '2.41B',
+    region: 'Americas',
+    badgeColor: '#F23645',
+    sparkline: [5912, 5920, 5918, 5935, 5948, 5955, 5969.34],
+    technicalRating: 'Strong Buy',
+    rsi: 62.4,
+    macd: '+18.42 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(5969.34, 5935.56, 101, SPX_WAVE),
+  },
+  {
+    id: 'ndx',
+    symbol: 'NDX',
+    shortLabel: 'Nasdaq 100',
+    name: 'Nasdaq 100',
+    exchange: 'US Tech Benchmark',
+    category: 'Indices',
+    currency: 'USD',
+    price: 20891.45,
+    change: 184.32,
+    changePercent: 0.89,
+    prevClose: 20707.13,
+    dayRange: '20,685.20 – 20,940.10',
+    week52Range: '15,480.22 – 21,182.00',
+    volume: '1.88B',
+    region: 'Americas',
+    badgeColor: '#2962FF',
+    sparkline: [20520, 20610, 20690, 20640, 20750, 20830, 20891.45],
+    technicalRating: 'Strong Buy',
+    rsi: 64.1,
+    macd: '+92.10 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(20891.45, 20707.13, 202),
+  },
+  {
+    id: 'dji',
+    symbol: 'DJI',
+    shortLabel: 'Dow 30',
+    name: 'Dow Jones Industrial Average',
+    exchange: 'NYSE',
+    category: 'Indices',
+    currency: 'USD',
+    price: 44296.51,
+    change: 97.24,
+    changePercent: 0.22,
+    prevClose: 44199.27,
+    dayRange: '44,080.12 – 44,340.90',
+    week52Range: '35,280.10 – 44,486.70',
+    volume: '412.6M',
+    region: 'Americas',
+    badgeColor: '#131722',
+    sparkline: [44010, 44110, 44150, 44190, 44220, 44260, 44296.51],
+    technicalRating: 'Buy',
+    rsi: 58.9,
+    macd: '+44.80 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(44296.51, 44199.27, 303),
+  },
+  {
+    id: 'rut',
+    symbol: 'RUT',
+    shortLabel: 'Russell 2000',
+    name: 'Russell 2000 Index',
+    exchange: 'NYSE / Russell',
+    category: 'Indices',
+    currency: 'USD',
+    price: 2398.42,
+    change: -3.36,
+    changePercent: -0.14,
+    prevClose: 2401.78,
+    dayRange: '2,385.10 – 2,412.65',
+    week52Range: '1,785.40 – 2,442.10',
+    volume: '982.4M',
+    region: 'Americas',
+    badgeColor: '#6366F1',
+    sparkline: [2418, 2412, 2408, 2405, 2401, 2399, 2398.42],
+    technicalRating: 'Neutral',
+    rsi: 51.2,
+    macd: '-2.14 (Neutral)',
+    seriesByTimeframe: buildAllTimeframes(2398.42, 2401.78, 404),
+  },
+  {
+    id: 'dax',
+    symbol: 'DAX',
+    shortLabel: 'DAX 40',
+    name: 'DAX 40',
+    exchange: 'Frankfurt',
+    category: 'Indices',
+    currency: 'EUR',
+    price: 19425.73,
+    change: 142.65,
+    changePercent: 0.74,
+    prevClose: 19283.08,
+    dayRange: '19,255.10 – 19,458.40',
+    week52Range: '15,910.20 – 19,674.68',
+    volume: '76.4M',
+    region: 'Europe',
+    badgeColor: '#D97706',
+    sparkline: [19150, 19220, 19290, 19310, 19360, 19395, 19425.73],
+    technicalRating: 'Buy',
+    rsi: 59.7,
+    macd: '+61.30 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(19425.73, 19283.08, 505),
+  },
+  {
+    id: 'n225',
+    symbol: 'NI225',
+    shortLabel: 'Nikkei 225',
+    name: 'Nikkei 225',
+    exchange: 'Tokyo Exchange',
+    category: 'Indices',
+    currency: 'JPY',
+    price: 38720.47,
+    change: 545.80,
+    changePercent: 1.43,
+    prevClose: 38174.67,
+    dayRange: '38,210.00 – 38,790.20',
+    week52Range: '31,156.12 – 42,426.77',
+    volume: '1.14B',
+    region: 'Asia-Pacific',
+    badgeColor: '#EC4899',
+    sparkline: [38020, 38150, 38280, 38410, 38530, 38640, 38720.47],
+    technicalRating: 'Strong Buy',
+    rsi: 65.2,
+    macd: '+215.40 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(38720.47, 38174.67, 606),
+  },
+];
+
+export const WORLD_INDICES_PANEL: Instrument[] = [
+  MAJOR_INDICES[1], // Nasdaq 100
+  MAJOR_INDICES[5], // Nikkei 225
+  {
+    id: 'ftse',
+    symbol: 'UKX',
+    shortLabel: 'FTSE 100',
+    name: 'FTSE 100',
+    exchange: 'London SE',
+    category: 'World stocks',
+    currency: 'GBP',
+    price: 8274.60,
+    change: -23.22,
+    changePercent: -0.28,
+    prevClose: 8297.82,
+    dayRange: '8,254.10 – 8,308.90',
+    week52Range: '7,404.08 – 8,474.41',
+    volume: '618.2M',
+    region: 'Europe',
+    badgeColor: '#3B82F6',
+    sparkline: [8310, 8302, 8295, 8288, 8280, 8278, 8274.60],
+    technicalRating: 'Neutral',
+    rsi: 47.8,
+    macd: '-6.40 (Neutral)',
+    seriesByTimeframe: buildAllTimeframes(8274.60, 8297.82, 707),
+  },
+  MAJOR_INDICES[4], // DAX 40
+  {
+    id: 'hsi',
+    symbol: 'HSI',
+    shortLabel: 'Hang Seng',
+    name: 'Hang Seng',
+    exchange: 'Hong Kong',
+    category: 'World stocks',
+    currency: 'HKD',
+    price: 19601.11,
+    change: -222.05,
+    changePercent: -1.12,
+    prevClose: 19823.16,
+    dayRange: '19,510.40 – 19,860.00',
+    week52Range: '14,794.16 – 23,241.74',
+    volume: '2.05B',
+    region: 'Asia-Pacific',
+    badgeColor: '#EF4444',
+    sparkline: [19920, 19880, 19810, 19740, 19690, 19630, 19601.11],
+    technicalRating: 'Sell',
+    rsi: 41.3,
+    macd: '-112.5 (Bearish)',
+    seriesByTimeframe: buildAllTimeframes(19601.11, 19823.16, 808),
+  },
+];
+
+export const ADDITIONAL_WORLD_INDICES: Instrument[] = [
+  {
+    id: 'cac',
+    symbol: 'PX1',
+    shortLabel: 'CAC 40',
+    name: 'CAC 40',
+    exchange: 'Euronext Paris',
+    category: 'World stocks',
+    currency: 'EUR',
+    price: 7312.45,
+    change: 31.18,
+    changePercent: 0.43,
+    prevClose: 7281.27,
+    dayRange: '7,268.00 – 7,330.10',
+    week52Range: '6,820.14 – 8,259.19',
+    volume: '58.3M',
+    region: 'Europe',
+    badgeColor: '#2563EB',
+    sparkline: [7250, 7265, 7278, 7290, 7299, 7305, 7312.45],
+    technicalRating: 'Neutral',
+    rsi: 52.1,
+    macd: '+4.80 (Neutral)',
+    seriesByTimeframe: buildAllTimeframes(7312.45, 7281.27, 901),
+  },
+  {
+    id: 'tsx',
+    symbol: 'TSX',
+    shortLabel: 'S&P/TSX',
+    name: 'S&P/TSX Composite',
+    exchange: 'Toronto SE',
+    category: 'World stocks',
+    currency: 'CAD',
+    price: 25410.80,
+    change: 156.40,
+    changePercent: 0.62,
+    prevClose: 25254.40,
+    dayRange: '25,210.00 – 25,442.50',
+    week52Range: '19,890.20 – 25,495.10',
+    volume: '245.1M',
+    region: 'Americas',
+    badgeColor: '#DC2626',
+    sparkline: [25180, 25210, 25260, 25305, 25350, 25388, 25410.80],
+    technicalRating: 'Buy',
+    rsi: 61.5,
+    macd: '+78.20 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(25410.80, 25254.40, 902),
+  },
+  {
+    id: 'sensex',
+    symbol: 'SENSEX',
+    shortLabel: 'BSE Sensex',
+    name: 'BSE Sensex',
+    exchange: 'BSE India',
+    category: 'World stocks',
+    currency: 'INR',
+    price: 79842.15,
+    change: 412.60,
+    changePercent: 0.52,
+    prevClose: 79429.55,
+    dayRange: '79,380.00 – 79,950.25',
+    week52Range: '66,120.40 – 85,978.25',
+    volume: '14.8M',
+    region: 'Asia-Pacific',
+    badgeColor: '#F59E0B',
+    sparkline: [79220, 79340, 79410, 79560, 79680, 79770, 79842.15],
+    technicalRating: 'Buy',
+    rsi: 57.4,
+    macd: '+190.10 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(79842.15, 79429.55, 903),
+  },
+  {
+    id: 'asx',
+    symbol: 'XJO',
+    shortLabel: 'ASX 200',
+    name: 'S&P/ASX 200',
+    exchange: 'Sydney ASX',
+    category: 'World stocks',
+    currency: 'AUD',
+    price: 8418.30,
+    change: 29.40,
+    changePercent: 0.35,
+    prevClose: 8388.90,
+    dayRange: '8,375.20 – 8,434.00',
+    week52Range: '6,995.10 – 8,462.40',
+    volume: '512.0M',
+    region: 'Asia-Pacific',
+    badgeColor: '#0EA5E9',
+    sparkline: [8360, 8372, 8384, 8392, 8401, 8410, 8418.30],
+    technicalRating: 'Buy',
+    rsi: 58.0,
+    macd: '+15.60 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(8418.30, 8388.90, 904),
+  },
+];
+
+export const US_STOCKS: Instrument[] = [
+  {
+    id: 'nvda',
+    symbol: 'NVDA',
+    name: 'NVIDIA Corporation',
+    exchange: 'NASDAQ',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 145.89,
+    change: 4.12,
+    changePercent: 2.91,
+    prevClose: 141.77,
+    dayRange: '141.20 – 146.45',
+    week52Range: '47.32 – 152.89',
+    volume: '68.42M',
+    marketCap: '$3.58T',
+    sector: 'Technology',
+    peRatio: '56.4',
+    dividendYield: '0.03%',
+    volatility: 4.8,
+    badgeColor: '#1B5E20',
+    sparkline: [139.2, 140.8, 140.1, 142.4, 143.1, 144.6, 145.89],
+    technicalRating: 'Strong Buy',
+    rsi: 66.8,
+    macd: '+2.34 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(145.89, 141.77, 1001),
+  },
+  {
+    id: 'aapl',
+    symbol: 'AAPL',
+    name: 'Apple Inc.',
+    exchange: 'NASDAQ',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 228.28,
+    change: 1.18,
+    changePercent: 0.52,
+    prevClose: 227.10,
+    dayRange: '226.40 – 229.15',
+    week52Range: '164.08 – 237.49',
+    volume: '42.19M',
+    marketCap: '$3.45T',
+    sector: 'Technology',
+    peRatio: '34.8',
+    dividendYield: '0.44%',
+    volatility: 1.6,
+    badgeColor: '#111827',
+    sparkline: [225.4, 226.1, 225.8, 226.9, 227.3, 227.9, 228.28],
+    technicalRating: 'Buy',
+    rsi: 58.2,
+    macd: '+0.82 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(228.28, 227.10, 1002),
+  },
+  {
+    id: 'tsla',
+    symbol: 'TSLA',
+    name: 'Tesla, Inc.',
+    exchange: 'NASDAQ',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 338.74,
+    change: -7.12,
+    changePercent: -2.06,
+    prevClose: 345.86,
+    dayRange: '335.90 – 348.20',
+    week52Range: '138.80 – 361.93',
+    volume: '51.87M',
+    marketCap: '$1.08T',
+    sector: 'Consumer Cyclical',
+    peRatio: '88.1',
+    dividendYield: '—',
+    volatility: 6.4,
+    badgeColor: '#DC2626',
+    sparkline: [348.2, 346.9, 347.4, 344.2, 341.0, 339.8, 338.74],
+    technicalRating: 'Neutral',
+    rsi: 53.4,
+    macd: '-1.15 (Bearish)',
+    seriesByTimeframe: buildAllTimeframes(338.74, 345.86, 1003),
+  },
+  {
+    id: 'amzn',
+    symbol: 'AMZN',
+    name: 'Amazon.com, Inc.',
+    exchange: 'NASDAQ',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 201.70,
+    change: 2.45,
+    changePercent: 1.23,
+    prevClose: 199.25,
+    dayRange: '198.90 – 202.40',
+    week52Range: '144.05 – 215.90',
+    volume: '38.90M',
+    marketCap: '$2.11T',
+    sector: 'Consumer Cyclical',
+    peRatio: '43.2',
+    dividendYield: '—',
+    volatility: 2.4,
+    badgeColor: '#F59E0B',
+    sparkline: [197.8, 198.4, 199.0, 199.8, 200.5, 201.1, 201.70],
+    technicalRating: 'Strong Buy',
+    rsi: 60.7,
+    macd: '+1.44 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(201.70, 199.25, 1004),
+  },
+  {
+    id: 'msft',
+    symbol: 'MSFT',
+    name: 'Microsoft Corporation',
+    exchange: 'NASDAQ',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 417.79,
+    change: 1.85,
+    changePercent: 0.44,
+    prevClose: 415.94,
+    dayRange: '414.50 – 419.12',
+    week52Range: '366.50 – 468.35',
+    volume: '19.22M',
+    marketCap: '$3.10T',
+    sector: 'Technology',
+    peRatio: '35.1',
+    dividendYield: '0.78%',
+    volatility: 1.5,
+    badgeColor: '#2563EB',
+    sparkline: [414.1, 415.0, 415.6, 415.2, 416.4, 417.1, 417.79],
+    technicalRating: 'Buy',
+    rsi: 55.6,
+    macd: '+0.65 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(417.79, 415.94, 1005),
+  },
+  {
+    id: 'meta',
+    symbol: 'META',
+    name: 'Meta Platforms, Inc.',
+    exchange: 'NASDAQ',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 572.14,
+    change: 12.60,
+    changePercent: 2.25,
+    prevClose: 559.54,
+    dayRange: '558.20 – 574.80',
+    week52Range: '324.60 – 602.95',
+    volume: '14.85M',
+    marketCap: '$1.44T',
+    sector: 'Technology',
+    peRatio: '27.9',
+    dividendYield: '0.35%',
+    volatility: 3.3,
+    badgeColor: '#0284C7',
+    sparkline: [555.0, 558.4, 561.2, 564.0, 567.8, 570.1, 572.14],
+    technicalRating: 'Strong Buy',
+    rsi: 63.1,
+    macd: '+4.10 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(572.14, 559.54, 1006),
+  },
+  {
+    id: 'googl',
+    symbol: 'GOOGL',
+    name: 'Alphabet Inc.',
+    exchange: 'NASDAQ',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 171.48,
+    change: -2.94,
+    changePercent: -1.69,
+    prevClose: 174.42,
+    dayRange: '170.80 – 175.10',
+    week52Range: '129.69 – 191.75',
+    volume: '26.12M',
+    marketCap: '$2.10T',
+    sector: 'Technology',
+    peRatio: '22.4',
+    dividendYield: '0.46%',
+    volatility: 2.8,
+    badgeColor: '#EA4335',
+    sparkline: [176.2, 175.5, 174.8, 173.9, 172.8, 172.0, 171.48],
+    technicalRating: 'Neutral',
+    rsi: 44.2,
+    macd: '-0.95 (Bearish)',
+    seriesByTimeframe: buildAllTimeframes(171.48, 174.42, 1007),
+  },
+  {
+    id: 'amd',
+    symbol: 'AMD',
+    name: 'Advanced Micro Devices',
+    exchange: 'NASDAQ',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 141.32,
+    change: 5.44,
+    changePercent: 4.00,
+    prevClose: 135.88,
+    dayRange: '135.40 – 142.10',
+    week52Range: '115.20 – 227.30',
+    volume: '48.10M',
+    marketCap: '$229B',
+    sector: 'Technology',
+    peRatio: '121.0',
+    dividendYield: '—',
+    volatility: 5.7,
+    badgeColor: '#0F172A',
+    sparkline: [134.8, 136.0, 137.4, 138.2, 139.5, 140.4, 141.32],
+    technicalRating: 'Buy',
+    rsi: 61.8,
+    macd: '+1.85 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(141.32, 135.88, 1008),
+  },
+  {
+    id: 'jpm',
+    symbol: 'JPM',
+    name: 'JPMorgan Chase & Co.',
+    exchange: 'NYSE',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 248.92,
+    change: 2.14,
+    changePercent: 0.87,
+    prevClose: 246.78,
+    dayRange: '246.10 – 249.80',
+    week52Range: '152.35 – 251.40',
+    volume: '8.74M',
+    marketCap: '$701B',
+    sector: 'Financials',
+    peRatio: '13.7',
+    dividendYield: '2.01%',
+    volatility: 1.4,
+    badgeColor: '#1E3A8A',
+    sparkline: [244.5, 245.8, 246.2, 247.1, 247.9, 248.4, 248.92],
+    technicalRating: 'Strong Buy',
+    rsi: 64.9,
+    macd: '+2.05 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(248.92, 246.78, 1009),
+  },
+  {
+    id: 'lly',
+    symbol: 'LLY',
+    name: 'Eli Lilly and Company',
+    exchange: 'NYSE',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 764.20,
+    change: -21.30,
+    changePercent: -2.71,
+    prevClose: 785.50,
+    dayRange: '760.15 – 787.00',
+    week52Range: '568.40 – 972.53',
+    volume: '5.12M',
+    marketCap: '$726B',
+    sector: 'Healthcare',
+    peRatio: '84.5',
+    dividendYield: '0.68%',
+    volatility: 4.5,
+    badgeColor: '#B91C1C',
+    sparkline: [792.0, 788.4, 782.1, 777.0, 772.4, 767.8, 764.20],
+    technicalRating: 'Sell',
+    rsi: 39.8,
+    macd: '-8.40 (Bearish)',
+    seriesByTimeframe: buildAllTimeframes(764.20, 785.50, 1010),
+  },
+  {
+    id: 'xom',
+    symbol: 'XOM',
+    name: 'Exxon Mobil Corporation',
+    exchange: 'NYSE',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 119.84,
+    change: -1.42,
+    changePercent: -1.17,
+    prevClose: 121.26,
+    dayRange: '119.20 – 121.65',
+    week52Range: '95.77 – 126.34',
+    volume: '14.32M',
+    marketCap: '$527B',
+    sector: 'Energy',
+    peRatio: '14.9',
+    dividendYield: '3.28%',
+    volatility: 1.9,
+    badgeColor: '#E11D48',
+    sparkline: [122.1, 121.8, 121.4, 120.9, 120.5, 120.1, 119.84],
+    technicalRating: 'Neutral',
+    rsi: 46.5,
+    macd: '-0.42 (Bearish)',
+    seriesByTimeframe: buildAllTimeframes(119.84, 121.26, 1011),
+  },
+  {
+    id: 'pltr',
+    symbol: 'PLTR',
+    name: 'Palantir Technologies Inc.',
+    exchange: 'NYSE',
+    category: 'US stocks',
+    currency: 'USD',
+    price: 64.95,
+    change: 3.84,
+    changePercent: 6.28,
+    prevClose: 61.11,
+    dayRange: '60.80 – 65.40',
+    week52Range: '15.66 – 66.00',
+    volume: '79.14M',
+    marketCap: '$148B',
+    sector: 'Technology',
+    peRatio: '324.0',
+    dividendYield: '—',
+    volatility: 7.9,
+    badgeColor: '#18181B',
+    sparkline: [59.8, 60.9, 61.5, 62.4, 63.2, 64.1, 64.95],
+    technicalRating: 'Strong Buy',
+    rsi: 74.2,
+    macd: '+3.12 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(64.95, 61.11, 1012),
+  },
+];
+
+export const CRYPTO_ASSETS: Instrument[] = [
+  {
+    id: 'btc',
+    symbol: 'BTC / USD',
+    shortLabel: 'BTC',
+    name: 'Bitcoin',
+    exchange: 'CRYPTO',
+    category: 'Crypto',
+    currency: 'USD',
+    price: 97420.00,
+    change: 2357.12,
+    changePercent: 2.48,
+    prevClose: 95062.88,
+    dayRange: '94,810.00 – 98,120.00',
+    week52Range: '38,505.00 – 99,588.00',
+    volume: '$44.2B',
+    marketCap: '$1.92T',
+    badgeColor: '#F7931A',
+    sparkline: [94200, 94900, 95100, 96200, 96800, 96500, 97420],
+    technicalRating: 'Strong Buy',
+    rsi: 69.5,
+    macd: '+1,420 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(97420.00, 95062.88, 2001),
+  },
+  {
+    id: 'eth',
+    symbol: 'ETH / USD',
+    shortLabel: 'ETH',
+    name: 'Ethereum',
+    exchange: 'CRYPTO',
+    category: 'Crypto',
+    currency: 'USD',
+    price: 3612.45,
+    change: 109.90,
+    changePercent: 3.14,
+    prevClose: 3502.55,
+    dayRange: '3,485.00 – 3,648.90',
+    week52Range: '2,112.00 – 4,093.92',
+    volume: '$22.7B',
+    marketCap: '$435B',
+    badgeColor: '#627EEA',
+    sparkline: [3440, 3465, 3490, 3502, 3545, 3578, 3612.45],
+    technicalRating: 'Strong Buy',
+    rsi: 65.4,
+    macd: '+84.20 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(3612.45, 3502.55, 2002),
+  },
+  {
+    id: 'sol',
+    symbol: 'SOL / USD',
+    shortLabel: 'SOL',
+    name: 'Solana',
+    exchange: 'CRYPTO',
+    category: 'Crypto',
+    currency: 'USD',
+    price: 242.18,
+    change: 11.09,
+    changePercent: 4.80,
+    prevClose: 231.09,
+    dayRange: '229.40 – 245.10',
+    week52Range: '54.12 – 263.83',
+    volume: '$8.9B',
+    marketCap: '$114B',
+    badgeColor: '#7C3AED',
+    sparkline: [228.5, 230.2, 233.4, 235.1, 238.0, 240.2, 242.18],
+    technicalRating: 'Strong Buy',
+    rsi: 68.1,
+    macd: '+9.45 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(242.18, 231.09, 2003),
+  },
+  {
+    id: 'xrp',
+    symbol: 'XRP / USD',
+    shortLabel: 'XRP',
+    name: 'XRP',
+    exchange: 'CRYPTO',
+    category: 'Crypto',
+    currency: 'USD',
+    price: 1.468,
+    change: -0.015,
+    changePercent: -1.05,
+    prevClose: 1.483,
+    dayRange: '1.442 – 1.512',
+    week52Range: '0.382 – 1.630',
+    volume: '$6.1B',
+    marketCap: '$83B',
+    badgeColor: '#111827',
+    sparkline: [1.51, 1.50, 1.495, 1.482, 1.478, 1.471, 1.468],
+    technicalRating: 'Buy',
+    rsi: 57.9,
+    macd: '+0.04 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(1.468, 1.483, 2004),
+  },
+  {
+    id: 'avax',
+    symbol: 'AVAX / USD',
+    shortLabel: 'AVAX',
+    name: 'Avalanche',
+    exchange: 'CRYPTO',
+    category: 'Crypto',
+    currency: 'USD',
+    price: 44.82,
+    change: 2.31,
+    changePercent: 5.43,
+    prevClose: 42.51,
+    dayRange: '42.10 – 45.40',
+    week52Range: '17.28 – 65.39',
+    volume: '$1.4B',
+    marketCap: '$18.3B',
+    badgeColor: '#E84142',
+    sparkline: [41.8, 42.3, 42.9, 43.4, 43.8, 44.3, 44.82],
+    technicalRating: 'Buy',
+    rsi: 62.7,
+    macd: '+1.64 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(44.82, 42.51, 2005),
+  },
+  {
+    id: 'link',
+    symbol: 'LINK / USD',
+    shortLabel: 'LINK',
+    name: 'Chainlink',
+    exchange: 'CRYPTO',
+    category: 'Crypto',
+    currency: 'USD',
+    price: 18.45,
+    change: 0.72,
+    changePercent: 4.06,
+    prevClose: 17.73,
+    dayRange: '17.50 – 18.68',
+    week52Range: '9.24 – 22.85',
+    volume: '$920M',
+    marketCap: '$11.6B',
+    badgeColor: '#2A5ADA',
+    sparkline: [17.4, 17.6, 17.8, 18.0, 18.1, 18.3, 18.45],
+    technicalRating: 'Strong Buy',
+    rsi: 64.2,
+    macd: '+0.71 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(18.45, 17.73, 2006),
+  },
+];
+
+export const COMMODITIES_FOREX: Instrument[] = [
+  {
+    id: 'gold',
+    symbol: 'GC1!',
+    shortLabel: 'Gold',
+    name: 'Gold Futures',
+    exchange: 'COMEX: GC1!',
+    category: 'Futures & commodities',
+    currency: 'USD',
+    price: 2668.50,
+    change: 12.75,
+    changePercent: 0.48,
+    prevClose: 2655.75,
+    dayRange: '2,649.10 – 2,676.40',
+    week52Range: '1,984.30 – 2,801.80',
+    volume: '184.2K',
+    badgeColor: '#EAB308',
+    sparkline: [2648, 2652, 2656, 2660, 2663, 2666, 2668.50],
+    technicalRating: 'Buy',
+    rsi: 56.4,
+    macd: '+8.20 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(2668.50, 2655.75, 3001),
+  },
+  {
+    id: 'oil',
+    symbol: 'CL1!',
+    shortLabel: 'WTI',
+    name: 'Crude Oil WTI',
+    exchange: 'NYMEX: CL1!',
+    category: 'Futures & commodities',
+    currency: 'USD',
+    price: 69.85,
+    change: -0.88,
+    changePercent: -1.24,
+    prevClose: 70.73,
+    dayRange: '69.20 – 71.10',
+    week52Range: '65.27 – 87.67',
+    volume: '312.5K',
+    badgeColor: '#0284C7',
+    sparkline: [71.1, 70.9, 70.6, 70.3, 70.1, 69.95, 69.85],
+    technicalRating: 'Sell',
+    rsi: 43.2,
+    macd: '-0.52 (Bearish)',
+    seriesByTimeframe: buildAllTimeframes(69.85, 70.73, 3002),
+  },
+  {
+    id: 'eurusd',
+    symbol: 'EURUSD',
+    shortLabel: 'EUR/USD',
+    name: 'EUR / USD',
+    exchange: 'FX_IDC: EURUSD',
+    category: 'Forex & currencies',
+    currency: 'USD',
+    price: 1.0532,
+    change: 0.0019,
+    changePercent: 0.18,
+    prevClose: 1.0513,
+    dayRange: '1.0498 – 1.0548',
+    week52Range: '1.0332 – 1.1214',
+    volume: '142.8K',
+    badgeColor: '#2563EB',
+    sparkline: [1.0495, 1.0502, 1.0511, 1.0518, 1.0522, 1.0528, 1.0532],
+    technicalRating: 'Neutral',
+    rsi: 46.8,
+    macd: '-0.0012 (Neutral)',
+    seriesByTimeframe: buildAllTimeframes(1.0532, 1.0513, 3003),
+  },
+  {
+    id: 'usdjpy',
+    symbol: 'USDJPY',
+    shortLabel: 'USD/JPY',
+    name: 'USD / JPY',
+    exchange: 'FX_IDC: USDJPY',
+    category: 'Forex & currencies',
+    currency: 'JPY',
+    price: 154.21,
+    change: -0.50,
+    changePercent: -0.32,
+    prevClose: 154.71,
+    dayRange: '153.85 – 154.92',
+    week52Range: '139.58 – 161.95',
+    volume: '118.4K',
+    badgeColor: '#F59E0B',
+    sparkline: [154.9, 154.75, 154.62, 154.48, 154.35, 154.28, 154.21],
+    technicalRating: 'Buy',
+    rsi: 54.9,
+    macd: '+0.42 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(154.21, 154.71, 3004),
+  },
+  {
+    id: 'natgas',
+    symbol: 'NG1!',
+    shortLabel: 'NG',
+    name: 'Natural Gas',
+    exchange: 'NYMEX: NG1!',
+    category: 'Futures & commodities',
+    currency: 'USD',
+    price: 3.189,
+    change: 0.107,
+    changePercent: 3.47,
+    prevClose: 3.082,
+    dayRange: '3.065 – 3.218',
+    week52Range: '1.522 – 3.556',
+    volume: '164.0K',
+    badgeColor: '#EA580C',
+    sparkline: [3.04, 3.07, 3.10, 3.12, 3.14, 3.17, 3.189],
+    technicalRating: 'Strong Buy',
+    rsi: 66.1,
+    macd: '+0.14 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(3.189, 3.082, 3005),
+  },
+  {
+    id: 'silver',
+    symbol: 'SI1!',
+    shortLabel: 'Silver',
+    name: 'Silver Futures',
+    exchange: 'COMEX: SI1!',
+    category: 'Futures & commodities',
+    currency: 'USD',
+    price: 31.42,
+    change: 0.44,
+    changePercent: 1.42,
+    prevClose: 30.98,
+    dayRange: '30.88 – 31.65',
+    week52Range: '21.92 – 34.86',
+    volume: '68.4K',
+    badgeColor: '#64748B',
+    sparkline: [30.7, 30.9, 31.0, 31.15, 31.22, 31.34, 31.42],
+    technicalRating: 'Buy',
+    rsi: 55.2,
+    macd: '+0.28 (Bullish)',
+    seriesByTimeframe: buildAllTimeframes(31.42, 30.98, 3006),
+  },
+  {
+    id: 'gbpusd',
+    symbol: 'GBPUSD',
+    shortLabel: 'GBP/USD',
+    name: 'GBP / USD',
+    exchange: 'FX_IDC: GBPUSD',
+    category: 'Forex & currencies',
+    currency: 'USD',
+    price: 1.2614,
+    change: 0.0031,
+    changePercent: 0.25,
+    prevClose: 1.2583,
+    dayRange: '1.2572 – 1.2634',
+    week52Range: '1.2299 – 1.3434',
+    volume: '96.2K',
+    badgeColor: '#4F46E5',
+    sparkline: [1.256, 1.257, 1.258, 1.259, 1.260, 1.261, 1.2614],
+    technicalRating: 'Neutral',
+    rsi: 48.5,
+    macd: '-0.0004 (Neutral)',
+    seriesByTimeframe: buildAllTimeframes(1.2614, 1.2583, 3007),
+  },
+  {
+    id: 'audusd',
+    symbol: 'AUDUSD',
+    shortLabel: 'AUD/USD',
+    name: 'AUD / USD',
+    exchange: 'FX_IDC: AUDUSD',
+    category: 'Forex & currencies',
+    currency: 'USD',
+    price: 0.6518,
+    change: -0.0014,
+    changePercent: -0.21,
+    prevClose: 0.6532,
+    dayRange: '0.6498 – 0.6540',
+    week52Range: '0.6348 – 0.6942',
+    volume: '64.5K',
+    badgeColor: '#059669',
+    sparkline: [0.654, 0.6535, 0.653, 0.6525, 0.6522, 0.6520, 0.6518],
+    technicalRating: 'Sell',
+    rsi: 42.1,
+    macd: '-0.0018 (Bearish)',
+    seriesByTimeframe: buildAllTimeframes(0.6518, 0.6532, 3008),
+  },
+];
+
+export const MACRO_BENCHMARKS = [
+  {
+    id: 'vix',
+    symbol: 'VIX',
+    label: 'VIX',
+    value: '14.12',
+    change: '-3.4%',
+    isPositive: false,
+    instrument: {
+      id: 'vix-inst',
+      symbol: 'VIX',
+      shortLabel: 'VIX',
+      name: 'CBOE Volatility Index',
+      exchange: 'CBOE',
+      category: 'Indices' as MarketCategory,
+      currency: 'USD',
+      price: 14.12,
+      change: -0.50,
+      changePercent: -3.40,
+      prevClose: 14.62,
+      dayRange: '13.95 – 14.80',
+      week52Range: '10.62 – 65.73',
+      volume: '—',
+      badgeColor: '#131722',
+      sparkline: [15.1, 14.9, 14.7, 14.5, 14.4, 14.2, 14.12],
+      technicalRating: 'Sell' as const,
+      rsi: 41.0,
+      macd: '-0.38 (Bearish)',
+      seriesByTimeframe: buildAllTimeframes(14.12, 14.62, 4001),
+    },
+  },
+  {
+    id: 'us10y',
+    symbol: 'US10Y',
+    label: '10Y Yield',
+    value: '4.412%',
+    change: '+0.02',
+    isPositive: true,
+    instrument: {
+      id: 'us10y-inst',
+      symbol: 'US10Y',
+      shortLabel: '10Y',
+      name: 'US 10-Year Treasury Yield',
+      exchange: 'TVC',
+      category: 'Bonds' as MarketCategory,
+      currency: '%',
+      price: 4.412,
+      change: 0.020,
+      changePercent: 0.46,
+      prevClose: 4.392,
+      dayRange: '4.380 – 4.428',
+      week52Range: '3.605 – 4.739',
+      volume: '—',
+      badgeColor: '#0284C7',
+      sparkline: [4.35, 4.36, 4.38, 4.39, 4.40, 4.405, 4.412],
+      technicalRating: 'Buy' as const,
+      rsi: 57.6,
+      macd: '+0.04 (Bullish)',
+      seriesByTimeframe: buildAllTimeframes(4.412, 4.392, 4002),
+    },
+  },
+  {
+    id: 'dxy',
+    symbol: 'DXY',
+    label: 'DXY',
+    value: '105.80',
+    change: '+0.14%',
+    isPositive: true,
+    instrument: {
+      id: 'dxy-inst',
+      symbol: 'DXY',
+      shortLabel: 'DXY',
+      name: 'U.S. Dollar Index',
+      exchange: 'TVC',
+      category: 'Forex & currencies' as MarketCategory,
+      currency: 'USD',
+      price: 105.80,
+      change: 0.15,
+      changePercent: 0.14,
+      prevClose: 105.65,
+      dayRange: '105.45 – 106.02',
+      week52Range: '100.15 – 108.07',
+      volume: '—',
+      badgeColor: '#089981',
+      sparkline: [105.2, 105.35, 105.5, 105.6, 105.68, 105.75, 105.80],
+      technicalRating: 'Strong Buy' as const,
+      rsi: 62.0,
+      macd: '+0.32 (Bullish)',
+      seriesByTimeframe: buildAllTimeframes(105.80, 105.65, 4003),
+    },
+  },
+];
+
+export const ECONOMIC_CALENDAR: EconomicEvent[] = [
+  {
+    id: 'ev1',
+    time: '13:30',
+    timezone: 'EST',
+    countryCode: 'US',
+    impact: 'HIGH IMPACT',
+    title: 'Core PCE Price Index (MoM)',
+    category: 'Inflation',
+    actual: '0.3%',
+    forecast: '0.3%',
+    prior: '0.3%',
+    description: 'Federal Reserve preferred gauge of consumer inflation excluding volatile food and energy prices.',
+  },
+  {
+    id: 'ev2',
+    time: '14:00',
+    timezone: 'CET',
+    countryCode: 'EU',
+    impact: 'MED IMPACT',
+    title: 'ECB President Lagarde Speaks',
+    category: 'Central Bank',
+    actual: '—',
+    forecast: '—',
+    prior: '—',
+    description: 'Remarks on Eurozone monetary policy trajectory and inflation outlook at Frankfurt Banking Congress.',
+  },
+  {
+    id: 'ev3',
+    time: '23:30',
+    timezone: 'JST',
+    countryCode: 'JP',
+    impact: 'HIGH IMPACT',
+    title: 'Tokyo Core CPI (YoY)',
+    category: 'Inflation',
+    actual: '2.2%',
+    forecast: '2.1%',
+    prior: '1.8%',
+    description: 'Leading indicator for nationwide Japanese consumer price trends and Bank of Japan rate normalization.',
+  },
+  {
+    id: 'ev4',
+    time: '08:30',
+    timezone: 'EST',
+    countryCode: 'US',
+    impact: 'HIGH IMPACT',
+    title: 'Initial Jobless Claims',
+    category: 'Employment',
+    actual: '213K',
+    forecast: '217K',
+    prior: '215K',
+    description: 'Weekly number of individuals filing for unemployment insurance for the first time.',
+  },
+  {
+    id: 'ev5',
+    time: '09:45',
+    timezone: 'EST',
+    countryCode: 'US',
+    impact: 'MED IMPACT',
+    title: 'S&P Global Services PMI',
+    category: 'Economic Activity',
+    actual: '56.1',
+    forecast: '55.3',
+    prior: '55.0',
+    description: 'Diffusion index measuring business conditions in the U.S. services sector.',
+  },
+  {
+    id: 'ev6',
+    time: '07:00',
+    timezone: 'GMT',
+    countryCode: 'UK',
+    impact: 'HIGH IMPACT',
+    title: 'UK Retail Sales (MoM)',
+    category: 'Consumer',
+    actual: '-0.7%',
+    forecast: '-0.3%',
+    prior: '0.1%',
+    description: 'Change in the total value of inflation-adjusted sales at the retail level across Great Britain.',
+  },
+  {
+    id: 'ev7',
+    time: '10:00',
+    timezone: 'CET',
+    countryCode: 'DE',
+    impact: 'MED IMPACT',
+    title: 'IFO Business Climate Index',
+    category: 'Sentiment',
+    actual: '85.7',
+    forecast: '86.0',
+    prior: '86.5',
+    description: 'Survey of roughly 9,000 German businesses assessing current climate and 6-month expectations.',
+  },
+  {
+    id: 'ev8',
+    time: '08:30',
+    timezone: 'EST',
+    countryCode: 'CA',
+    impact: 'LOW IMPACT',
+    title: 'Canada GDP Growth (QoQ)',
+    category: 'Growth',
+    actual: '0.3%',
+    forecast: '0.3%',
+    prior: '0.2%',
+    description: 'Change in the inflation-adjusted value of all goods and services produced by the Canadian economy.',
+  },
+];
+
+export const BONDS_DATA: BondInstrument[] = [
+  { id: 'us02y', symbol: 'US02Y', name: 'U.S. 2-Year Treasury', country: 'United States', countryCode: 'US', maturity: '2Y', yield: 4.284, changeBps: -3.2, prevClose: 4.316, coupon: '4.125%', price: 99.68 },
+  { id: 'us10y', symbol: 'US10Y', name: 'U.S. 10-Year Treasury', country: 'United States', countryCode: 'US', maturity: '10Y', yield: 4.412, changeBps: 2.0, prevClose: 4.392, coupon: '4.250%', price: 98.71 },
+  { id: 'us30y', symbol: 'US30Y', name: 'U.S. 30-Year Treasury', country: 'United States', countryCode: 'US', maturity: '30Y', yield: 4.598, changeBps: 1.4, prevClose: 4.584, coupon: '4.500%', price: 98.42 },
+  { id: 'de10y', symbol: 'DE10Y', name: 'Germany 10-Year Bund', country: 'Germany', countryCode: 'DE', maturity: '10Y', yield: 2.284, changeBps: -4.1, prevClose: 2.325, coupon: '2.600%', price: 102.75 },
+  { id: 'uk10y', symbol: 'UK10Y', name: 'UK 10-Year Gilt', country: 'United Kingdom', countryCode: 'UK', maturity: '10Y', yield: 4.365, changeBps: -1.8, prevClose: 4.383, coupon: '4.250%', price: 99.10 },
+  { id: 'jp10y', symbol: 'JP10Y', name: 'Japan 10-Year JGB', country: 'Japan', countryCode: 'JP', maturity: '10Y', yield: 1.074, changeBps: 1.9, prevClose: 1.055, coupon: '1.100%', price: 100.24 },
+];
+
+export const US_YIELD_CURVE = [
+  { tenor: '3M', yield: 4.54 },
+  { tenor: '6M', yield: 4.45 },
+  { tenor: '1Y', yield: 4.36 },
+  { tenor: '2Y', yield: 4.28 },
+  { tenor: '5Y', yield: 4.26 },
+  { tenor: '10Y', yield: 4.41 },
+  { tenor: '20Y', yield: 4.68 },
+  { tenor: '30Y', yield: 4.60 },
+];
+
+export const ETFS_DATA: EtfInstrument[] = [
+  { id: 'spy', symbol: 'SPY', name: 'SPDR S&P 500 ETF Trust', issuer: 'State Street', assetClass: 'US Large Cap', price: 595.42, change: 3.38, changePercent: 0.57, aum: '$628.4B', expenseRatio: '0.09%', dividendYield: '1.21%', sparkline: [589, 590.4, 591.2, 592.5, 593.8, 594.6, 595.42] },
+  { id: 'qqq', symbol: 'QQQ', name: 'Invesco QQQ Trust Series 1', issuer: 'Invesco', assetClass: 'US Tech / Growth', price: 508.90, change: 4.49, changePercent: 0.89, aum: '$311.2B', expenseRatio: '0.20%', dividendYield: '0.58%', sparkline: [501, 502.5, 504.0, 505.1, 506.4, 507.8, 508.90] },
+  { id: 'voo', symbol: 'VOO', name: 'Vanguard S&P 500 ETF', issuer: 'Vanguard', assetClass: 'US Large Cap', price: 547.18, change: 3.10, changePercent: 0.57, aum: '$571.0B', expenseRatio: '0.03%', dividendYield: '1.25%', sparkline: [541, 542.4, 543.1, 544.5, 545.6, 546.3, 547.18] },
+  { id: 'ibit', symbol: 'IBIT', name: 'iShares Bitcoin Trust ETF', issuer: 'BlackRock', assetClass: 'Digital Assets', price: 55.42, change: 1.34, changePercent: 2.48, aum: '$48.6B', expenseRatio: '0.25%', dividendYield: '—', sparkline: [52.9, 53.4, 53.8, 54.1, 54.6, 55.0, 55.42] },
+  { id: 'gld', symbol: 'GLD', name: 'SPDR Gold Shares', issuer: 'State Street', assetClass: 'Commodities', price: 245.60, change: 1.17, changePercent: 0.48, aum: '$74.2B', expenseRatio: '0.40%', dividendYield: '—', sparkline: [243.1, 243.8, 244.0, 244.5, 244.9, 245.3, 245.60] },
+  { id: 'tlt', symbol: 'TLT', name: 'iShares 20+ Year Treasury Bond ETF', issuer: 'BlackRock', assetClass: 'Fixed Income', price: 91.18, change: -0.44, changePercent: -0.48, aum: '$59.8B', expenseRatio: '0.15%', dividendYield: '3.98%', sparkline: [92.1, 91.9, 91.7, 91.6, 91.4, 91.3, 91.18] },
+];
+
+export const HEATMAP_BLOCKS: HeatmapBlock[] = [
+  { symbol: 'NVDA', name: 'NVIDIA', sector: 'Semiconductors', price: 145.89, changePercent: 2.91, marketCapWeight: 4 },
+  { symbol: 'AAPL', name: 'Apple', sector: 'Consumer Tech', price: 228.28, changePercent: 0.52, marketCapWeight: 4 },
+  { symbol: 'MSFT', name: 'Microsoft', sector: 'Software', price: 417.79, changePercent: 0.44, marketCapWeight: 4 },
+  { symbol: 'AMZN', name: 'Amazon', sector: 'Internet Retail', price: 201.70, changePercent: 1.23, marketCapWeight: 3 },
+  { symbol: 'GOOGL', name: 'Alphabet', sector: 'Interactive Media', price: 171.48, changePercent: -1.69, marketCapWeight: 3 },
+  { symbol: 'META', name: 'Meta', sector: 'Interactive Media', price: 572.14, changePercent: 2.25, marketCapWeight: 2 },
+  { symbol: 'TSLA', name: 'Tesla', sector: 'Auto Manufacturers', price: 338.74, changePercent: -2.06, marketCapWeight: 2 },
+  { symbol: 'JPM', name: 'JPMorgan', sector: 'Banks', price: 248.92, changePercent: 0.87, marketCapWeight: 2 },
+  { symbol: 'LLY', name: 'Eli Lilly', sector: 'Pharma', price: 764.20, changePercent: -2.71, marketCapWeight: 2 },
+  { symbol: 'AMD', name: 'AMD', sector: 'Semiconductors', price: 141.32, changePercent: 4.00, marketCapWeight: 1 },
+  { symbol: 'XOM', name: 'Exxon', sector: 'Oil & Gas', price: 119.84, changePercent: -1.17, marketCapWeight: 1 },
+  { symbol: 'PLTR', name: 'Palantir', sector: 'Software', price: 64.95, changePercent: 6.28, marketCapWeight: 1 },
+];
+
+export const ALL_INSTRUMENTS: Instrument[] = [
+  ...MAJOR_INDICES,
+  ...WORLD_INDICES_PANEL.filter((i) => !MAJOR_INDICES.some((m) => m.id === i.id)),
+  ...ADDITIONAL_WORLD_INDICES,
+  ...US_STOCKS,
+  ...CRYPTO_ASSETS,
+  ...COMMODITIES_FOREX,
+];
